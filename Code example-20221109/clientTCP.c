@@ -30,13 +30,13 @@ int main(int argc, char **argv) {
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = inet_addr(SERVER_ADDR);    /*32 bit Internet address network byte ordered*/
     server_addr.sin_port = htons(SERVER_PORT);        /*server TCP port must be network byte ordered */
-    printf("ola\n");
+
     /*open a TCP socket*/
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("socket()");
         exit(-1);
     }
-    printf("ola\n");
+
     /*connect to the server*/
     if (connect(sockfd,
                 (struct sockaddr *) &server_addr,
@@ -44,17 +44,17 @@ int main(int argc, char **argv) {
         perror("connect()");
         exit(-1);
     }
-    printf("ola\n");
+
     /*send a string to the server*/
     bytes = write(sockfd, buf, strlen(buf));
-    printf("ola\n");
+
     if (bytes > 0)
         printf("Bytes escritos %ld\n", bytes);
     else {
         perror("write()");
         exit(-1);
     }
-    printf("ola\n");
+
     if (close(sockfd)<0) {
         perror("close()");
         exit(-1);
