@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include <string.h>
 
@@ -20,12 +21,15 @@ struct ConnectionParams
 void readResponseFromServer(int sockfd)
 {
     char buf[1024];
-    FILE *file = fdopen(sockfd, "r");
-    while ((NULL != fgets(buf, sizeof(buf), file)) > 0)
+    int bytes;
+    int readSomething = 0;
+    while ((bytes = read(sockfd, buf, 1023)) > 0 || readSomething == 0)
     {
+        readSomething = 1;
+        buf[bytes] = '\0';
         printf("%s", buf);
+        printf("ola\n");
     }
-    fclose(file);
 }
 
 void connectServer(struct ConnectionParams *params)
@@ -55,7 +59,9 @@ void connectServer(struct ConnectionParams *params)
         perror("connect()");
         exit(-1);
     }
+    fcntl(params->sockfd, F_SETFL, fcntl(params->sockfd, F_GETFL) | O_NONBLOCK);
     readResponseFromServer(params->sockfd);
+    printf("out\n");
 }
 
 void parseURL(struct ConnectionParams *params, char *url)
@@ -142,6 +148,7 @@ void login(struct ConnectionParams connectionParams)
 
     sendMessageToServer(connectionParams.sockfd, buf);
     readResponseFromServer(connectionParams.sockfd);
+
     printf("ola\n");
     memset(buf, 0, 256);
     strcpy(buf, "pass ");
@@ -162,8 +169,4 @@ int main(int argc, char **argv)
     sendMessageToServer(connectionParams.sockfd, "pasv\r\n");
     readResponseFromServer(connectionParams.sockfd);
     return 0;
-}
-
-void downloadFile_FTP(char *url)
-{
 }
