@@ -9,40 +9,86 @@
 
 #include <string.h>
 
+#define DEFAULT_PORT 21
+#define INPUT_BUF_SIZE 1024
+#define DEFAULT_BUF_SIZE 256
+
 struct ConnectionParams
 {
     int port, sockfd;
-    char host[256];
-    char path[256];
-    char user[256];
-    char pass[256];
+    char host[DEFAULT_BUF_SIZE];
+    char path[DEFAULT_BUF_SIZE];
+    char user[DEFAULT_BUF_SIZE];
+    char pass[DEFAULT_BUF_SIZE];
+    char ip[DEFAULT_BUF_SIZE];
 };
 
-void readResponseFromServer(int sockfd)
+struct ConnectionParams readResponseFromServer(int sockfd)
 {
-    char buf[1024];
-    int bytes;
-    int readSomething = 0;
-    while ((bytes = read(sockfd, buf, 1023)) > 0 || readSomething == 0)
+    char *buf = malloc(INPUT_BUF_SIZE);
+    struct ConnectionParams params;
+    size_t bytes = 0;
+    FILE *file = fdopen(sockfd, "r");
+    while (getline(&buf, &bytes, file) != -1)
     {
-        readSomething = 1;
-        buf[bytes] = '\0';
         printf("%s", buf);
-        printf("ola\n");
+        if (strstr(buf, "-") == NULL)
+        {
+            break;
+        }
     }
+    if (memcmp(buf, "227", 3) == 0)
+    {
+        char *start = strstr(buf, "(")+1;
+        char *token = strtok(start, ",");
+        int i = 0;
+        params.host[0] = '\0';
+        while (token != NULL)
+        {
+            if (i < 4)
+            {
+                strcat(params.ip, token);
+                if (i < 3)
+                {
+                    strcat(params.ip, ".");
+                }
+            }
+            else if (i == 4)
+            {
+                params.port = atoi(token) * 256;
+            }
+            else if (i == 5)
+            {
+                params.port += atoi(token);
+            }
+            token = strtok(NULL, ",");
+            i++;
+        }
+    }
+    free(buf);
+    return params;
 }
 
 void connectServer(struct ConnectionParams *params)
 {
     struct sockaddr_in server_addr;
     struct hostent *h;
-    h = gethostbyname(params->host);
+    char *ip;
+    if (params->host[0] == '\0')
+    {
+        ip = params->ip;
+    }
+    else
+    {
+        h = gethostbyname(params->host);
+        ip = inet_ntoa(*((struct in_addr *)h->h_addr));
+    }
 
     /*server address handling*/
     bzero((char *)&server_addr, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = inet_addr(inet_ntoa(*((struct in_addr *)h->h_addr))); /*32 bit Internet address network byte ordered*/
-    server_addr.sin_port = htons(params->port);                                         /*server TCP port must be network byte ordered */
+    server_addr.sin_addr.s_addr = inet_addr(ip); /*32 bit Internet address network byte ordered*/
+    server_addr.sin_port = htons(params->port);  /*server TCP port must be network byte ordered */
 
     /*open a TCP socket*/
     if ((params->sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
@@ -57,11 +103,12 @@ void connectServer(struct ConnectionParams *params)
                 sizeof(server_addr)) < 0)
     {
         perror("connect()");
+        printf("ip: %s\n", ip);
+        printf("%d\n", params->port);
         exit(-1);
     }
-    fcntl(params->sockfd, F_SETFL, fcntl(params->sockfd, F_GETFL) | O_NONBLOCK);
-    readResponseFromServer(params->sockfd);
-    printf("out\n");
+    if (params->host[0] != '\0')
+        readResponseFromServer(params->sockfd);
 }
 
 void parseURL(struct ConnectionParams *params, char *url)
@@ -120,7 +167,7 @@ void parseURL(struct ConnectionParams *params, char *url)
             params->host[barra - base] = 0;
             strcpy(params->path, barra);
         }
-        params->port = 21;
+        params->port = DEFAULT_PORT;
     }
 }
 
@@ -129,9 +176,7 @@ void sendMessageToServer(int sockfd, char *message)
     int bytes;
 
     bytes = write(sockfd, message, strlen(message));
-    if (bytes > 0)
-        printf("Sent message |%s| to the server! Bytes written: %d\n", message, bytes);
-    else
+    if (bytes < 0)
     {
         perror("write()");
         exit(-1);
@@ -140,8 +185,7 @@ void sendMessageToServer(int sockfd, char *message)
 
 void login(struct ConnectionParams connectionParams)
 {
-    char buf[256];
-    memset(buf, 0, 256);
+    char buf[DEFAULT_BUF_SIZE];
     strcpy(buf, "user ");
     strcat(buf, connectionParams.user);
     strcat(buf, "\r\n");
@@ -149,8 +193,6 @@ void login(struct ConnectionParams connectionParams)
     sendMessageToServer(connectionParams.sockfd, buf);
     readResponseFromServer(connectionParams.sockfd);
 
-    printf("ola\n");
-    memset(buf, 0, 256);
     strcpy(buf, "pass ");
     strcat(buf, connectionParams.pass);
     strcat(buf, "\r\n");
@@ -158,15 +200,60 @@ void login(struct ConnectionParams connectionParams)
     readResponseFromServer(connectionParams.sockfd);
 }
 
+void downloadFile(int sockfd, char* path){
+    char* buf = malloc(INPUT_BUF_SIZE);
+    char fileName[DEFAULT_BUF_SIZE];
+    size_t bytes;
+    for (int i = strlen(path) - 1; i >= 0; i--)
+    {
+        if (path[i] == '/')
+        {
+            strcpy(fileName, path + i + 1);
+            break;
+        }
+    }
+    FILE *downloadedFile = fopen(fileName, "w");
+    FILE *received = fdopen(sockfd, "r");
+    while (getline(&buf, &bytes, received) != -1)
+    {
+        fprintf(downloadedFile, "%s", buf);
+    }
+    free(buf);
+}
+
+void setUpPassive(struct ConnectionParams *downloadFileParams)
+{
+    char buf[DEFAULT_BUF_SIZE];
+    strcpy(buf, "pasv\r\n");
+    sendMessageToServer(downloadFileParams->sockfd, buf);
+
+    struct ConnectionParams tmp = readResponseFromServer(downloadFileParams->sockfd);
+
+    connectServer(&tmp);
+
+    strcpy(buf, "retr ");
+    strcat(buf, downloadFileParams->path);
+    strcat(buf, "\r\n");
+    sendMessageToServer(downloadFileParams->sockfd, buf);
+    readResponseFromServer(downloadFileParams->sockfd);
+
+    downloadFile(tmp.sockfd, downloadFileParams->path);
+}
+
 int main(int argc, char **argv)
 {
-    char url[] = "ftp://anonymous:ola@ftp.up.pt/pub/kodi/robots.txt";
+    char url[] = "ftp://anonymous:ola@ftp.up.pt:21/pub/kodi/robots.txt";
     struct ConnectionParams connectionParams;
+    connectionParams.user[0] = '\0';
+    connectionParams.pass[0] = '\0';
     parseURL(&connectionParams, url);
+    if (connectionParams.user[0] == '\0'){
+        strcpy(connectionParams.user, "anonymous");
+        strcpy(connectionParams.pass, "qualquer");
+    }
     printf("host: %s\nport: %d\npath: %s\nuser: %s\npass: %s\n\n", connectionParams.host, connectionParams.port, connectionParams.path, connectionParams.user, connectionParams.pass);
     connectServer(&connectionParams);
     login(connectionParams);
-    sendMessageToServer(connectionParams.sockfd, "pasv\r\n");
-    readResponseFromServer(connectionParams.sockfd);
+    setUpPassive(&connectionParams);
     return 0;
 }
