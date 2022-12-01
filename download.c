@@ -39,7 +39,7 @@ struct ConnectionParams readResponseFromServer(int sockfd)
     }
     if (memcmp(buf, "227", 3) == 0)
     {
-        char *start = strstr(buf, "(")+1;
+        char *start = strstr(buf, "(") + 1;
         char *token = strtok(start, ",");
         int i = 0;
         params.host[0] = '\0';
@@ -65,6 +65,12 @@ struct ConnectionParams readResponseFromServer(int sockfd)
             i++;
         }
     }
+    else if (buf[0] == '5')
+    {
+        printf("Received error code from server! Aborting...\n");
+        free(buf);
+        exit(0);
+    }
     free(buf);
     return params;
 }
@@ -80,10 +86,13 @@ void connectServer(struct ConnectionParams *params)
     }
     else
     {
-        h = gethostbyname(params->host);
+        if ((h = gethostbyname(params->host)) == NULL)
+        {
+            herror("gethostbyname()");
+            exit(-1);
+        }
         ip = inet_ntoa(*((struct in_addr *)h->h_addr));
     }
-
     /*server address handling*/
     bzero((char *)&server_addr, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
@@ -98,6 +107,7 @@ void connectServer(struct ConnectionParams *params)
     }
 
     /*connect to the server*/
+    printf("Connecting to server %s at port %d...\n", ip, params->port);
     if (connect(params->sockfd,
                 (struct sockaddr *)&server_addr,
                 sizeof(server_addr)) < 0)
@@ -106,6 +116,10 @@ void connectServer(struct ConnectionParams *params)
         printf("ip: %s\n", ip);
         printf("%d\n", params->port);
         exit(-1);
+    }
+    else
+    {
+        printf("Connection established!\n");
     }
     if (params->host[0] != '\0')
         readResponseFromServer(params->sockfd);
@@ -120,63 +134,48 @@ void parseURL(struct ConnectionParams *params, char *url)
     }
     else
     {
-        printf("Invalid URL\n");
-        return;
+        printf("Invalid URL!\n");
+        exit(-1);
     }
     char *barra = strchr(base, '/');
+    if (barra == NULL)
+    {
+        printf("Invalid URL!\n");
+        exit(-1);
+    }
     char *arroba = strchr(base, '@');
-    if (arroba != NULL && (barra == NULL || arroba < barra))
+    if (arroba != NULL && arroba < barra)
     {
         // user:pass@host:port/path
-        char *t = strchr(base, ':');
-        memcpy(params->user, base, t - base);
-        params->user[t - base] = 0;
-        memcpy(params->pass, t + 1, arroba - t - 1);
-        params->pass[arroba - t - 1] = 0;
+        char *credentialSep = strchr(base, ':');
+        memcpy(params->user, base, credentialSep - base);
+        params->user[credentialSep - base] = '\0';
+        memcpy(params->pass, credentialSep + 1, arroba - credentialSep - 1);
+        params->pass[arroba - credentialSep - 1] = '\0';
         base = arroba + 1;
     }
-    char *dois_pontos = strchr(base, ':');
-    if (dois_pontos != NULL && (barra == NULL || dois_pontos < barra))
+    char *doisPontos = strchr(base, ':');
+    if (doisPontos != NULL && doisPontos < barra)
     {
         // host:port/path
-        memcpy(params->host, base, dois_pontos - base);
-        params->host[dois_pontos - base] = 0;
-        params->port = atoi(dois_pontos + 1);
-        if (barra == NULL)
-        {
-            params->path[0] = '/';
-            params->path[1] = 0;
-        }
-        else
-        {
-            strcpy(params->path, barra);
-        }
+        memcpy(params->host, base, doisPontos - base);
+        params->host[doisPontos - base] = '\0';
+        params->port = atoi(doisPontos + 1);
+        strcpy(params->path, barra);
     }
     else
     {
         // host/path
-        if (barra == NULL)
-        {
-            strcpy(params->host, base);
-            params->path[0] = '/';
-            params->path[1] = 0;
-        }
-        else
-        {
-            memcpy(params->host, base, barra - base);
-            params->host[barra - base] = 0;
-            strcpy(params->path, barra);
-        }
+        memcpy(params->host, base, barra - base);
+        params->host[barra - base] = '\0';
+        strcpy(params->path, barra);
         params->port = DEFAULT_PORT;
     }
 }
 
 void sendMessageToServer(int sockfd, char *message)
 {
-    int bytes;
-
-    bytes = write(sockfd, message, strlen(message));
-    if (bytes < 0)
+    if (write(sockfd, message, strlen(message)) < 0)
     {
         perror("write()");
         exit(-1);
@@ -200,8 +199,9 @@ void login(struct ConnectionParams connectionParams)
     readResponseFromServer(connectionParams.sockfd);
 }
 
-void downloadFile(int sockfd, char* path){
-    char* buf = malloc(INPUT_BUF_SIZE);
+void downloadFile(int sockfd, char *path)
+{
+    char *buf = malloc(INPUT_BUF_SIZE);
     char fileName[DEFAULT_BUF_SIZE];
     size_t bytes;
     for (int i = strlen(path) - 1; i >= 0; i--)
@@ -214,10 +214,12 @@ void downloadFile(int sockfd, char* path){
     }
     FILE *downloadedFile = fopen(fileName, "w");
     FILE *received = fdopen(sockfd, "r");
+    printf("Downloading bytes to %s...\n", fileName);
     while (getline(&buf, &bytes, received) != -1)
     {
         fprintf(downloadedFile, "%s", buf);
     }
+    printf("Download complete!\n");
     free(buf);
 }
 
@@ -227,9 +229,9 @@ void setUpPassive(struct ConnectionParams *downloadFileParams)
     strcpy(buf, "pasv\r\n");
     sendMessageToServer(downloadFileParams->sockfd, buf);
 
-    struct ConnectionParams tmp = readResponseFromServer(downloadFileParams->sockfd);
+    struct ConnectionParams downloadConnection = readResponseFromServer(downloadFileParams->sockfd);
 
-    connectServer(&tmp);
+    connectServer(&downloadConnection);
 
     strcpy(buf, "retr ");
     strcat(buf, downloadFileParams->path);
@@ -237,7 +239,7 @@ void setUpPassive(struct ConnectionParams *downloadFileParams)
     sendMessageToServer(downloadFileParams->sockfd, buf);
     readResponseFromServer(downloadFileParams->sockfd);
 
-    downloadFile(tmp.sockfd, downloadFileParams->path);
+    downloadFile(downloadConnection.sockfd, downloadFileParams->path);
 }
 
 int main(int argc, char **argv)
@@ -247,7 +249,8 @@ int main(int argc, char **argv)
     connectionParams.user[0] = '\0';
     connectionParams.pass[0] = '\0';
     parseURL(&connectionParams, url);
-    if (connectionParams.user[0] == '\0'){
+    if (connectionParams.user[0] == '\0')
+    {
         strcpy(connectionParams.user, "anonymous");
         strcpy(connectionParams.pass, "qualquer");
     }
